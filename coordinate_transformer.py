@@ -34,6 +34,10 @@ class CoordinateTransformerApp:
 
         self.cctv_canvas.bind("<Button-1>", self.select_cctv_point)
         self.drone_canvas.bind("<Button-1>", self.select_drone_point)
+        self.cctv_canvas.bind("<MouseWheel>", self.zoom_cctv)
+        self.drone_canvas.bind("<MouseWheel>", self.zoom_drone)
+        self.cctv_canvas.bind("<B2-Motion>", self.pan_cctv)
+        self.drone_canvas.bind("<B2-Motion>", self.pan_drone)
 
         # --- Image data ---
         self.cctv_image = None
@@ -42,8 +46,14 @@ class CoordinateTransformerApp:
         self.drone_photo = None
         self.cctv_points = []
         self.drone_points = []
-        self.cctv_image_resized_ratio = 1
-        self.drone_image_resized_ratio = 1
+
+        # --- Zoom/Pan Data ---
+        self.cctv_scale = 1.0
+        self.drone_scale = 1.0
+        self.cctv_center_x = 0
+        self.cctv_center_y = 0
+        self.drone_center_x = 0
+        self.drone_center_y = 0
 
 
     def upload_cctv(self):
@@ -60,51 +70,110 @@ class CoordinateTransformerApp:
         self.drone_image = cv2.imread(filepath)
         self.display_image(self.drone_image, self.drone_canvas, 'drone')
 
-    def display_image(self, image, canvas, image_type):
+    def display_image(self, image, canvas, image_type, scale, center_x, center_y):
         canvas.delete("all")
+        if image is None:
+            return
 
-        # Resize image to fit canvas
         h, w, _ = image.shape
-        h_ratio = 480 / h
-        w_ratio = 640 / w
-        ratio = min(h_ratio, w_ratio)
 
-        if image_type == 'cctv':
-            self.cctv_image_resized_ratio = ratio
-        else:
-            self.drone_image_resized_ratio = ratio
+        # New dimensions based on scale
+        new_w, new_h = int(w * scale), int(h * scale)
 
-        new_h, new_w = int(h * ratio), int(w * ratio)
+        # Resizing the image
         resized_image = cv2.resize(image, (new_w, new_h))
 
+        # Determine the region to display
+        display_x1 = center_x - 640 // 2
+        display_y1 = center_y - 480 // 2
+        display_x2 = center_x + 640 // 2
+        display_y2 = center_y + 480 // 2
+
+        # Crop the resized image to the canvas size
+        crop_x1 = max(0, display_x1)
+        crop_y1 = max(0, display_y1)
+        crop_x2 = min(new_w, display_x2)
+        crop_y2 = min(new_h, display_y2)
+
+        cropped_image_cv = resized_image[crop_y1:crop_y2, crop_x1:crop_x2]
+
         # Convert for Tkinter
-        image_rgb = cv2.cvtColor(resized_image, cv2.COLOR_BGR2RGB)
+        image_rgb = cv2.cvtColor(cropped_image_cv, cv2.COLOR_BGR2RGB)
         image_pil = Image.fromarray(image_rgb)
 
+        photo = ImageTk.PhotoImage(image_pil)
+
+        # Calculate where to place the image on the canvas
+        canvas_x = (640 - (crop_x2 - crop_x1)) // 2
+        canvas_y = (480 - (crop_y2 - crop_y1)) // 2
+
         if image_type == 'cctv':
-            self.cctv_photo = ImageTk.PhotoImage(image_pil)
-            canvas.create_image(0, 0, anchor=tk.NW, image=self.cctv_photo)
+            self.cctv_photo = photo
+            canvas.create_image(canvas_x, canvas_y, anchor=tk.NW, image=self.cctv_photo)
         else:
-            self.drone_photo = ImageTk.PhotoImage(image_pil)
-            canvas.create_image(0, 0, anchor=tk.NW, image=self.drone_photo)
+            self.drone_photo = photo
+            canvas.create_image(canvas_x, canvas_y, anchor=tk.NW, image=self.drone_photo)
+
 
     def select_cctv_point(self, event):
-        # Store original coordinates
-        original_x = event.x / self.cctv_image_resized_ratio
-        original_y = event.y / self.cctv_image_resized_ratio
+        # Adjust for panning and scaling
+        canvas_x = event.x
+        canvas_y = event.y
+
+        # Calculate the position on the scaled image
+        img_x = self.cctv_center_x - (320 - canvas_x)
+        img_y = self.cctv_center_y - (240 - canvas_y)
+
+        # Convert to original image coordinates
+        original_x = img_x / self.cctv_scale
+        original_y = img_y / self.cctv_scale
+
         self.cctv_points.append((original_x, original_y))
 
         # Draw point on canvas
-        self.cctv_canvas.create_oval(event.x - 3, event.y - 3, event.x + 3, event.y + 3, fill="red", outline="red")
+        self.cctv_canvas.create_oval(canvas_x - 3, canvas_y - 3, canvas_x + 3, canvas_y + 3, fill="red", outline="red")
 
     def select_drone_point(self, event):
-        # Store original coordinates
-        original_x = event.x / self.drone_image_resized_ratio
-        original_y = event.y / self.drone_image_resized_ratio
+        # Adjust for panning and scaling
+        canvas_x = event.x
+        canvas_y = event.y
+
+        # Calculate the position on the scaled image
+        img_x = self.drone_center_x - (320 - canvas_x)
+        img_y = self.drone_center_y - (240 - canvas_y)
+
+        # Convert to original image coordinates
+        original_x = img_x / self.drone_scale
+        original_y = img_y / self.drone_scale
+
         self.drone_points.append((original_x, original_y))
 
         # Draw point on canvas
-        self.drone_canvas.create_oval(event.x - 3, event.y - 3, event.x + 3, event.y + 3, fill="blue", outline="blue")
+        self.drone_canvas.create_oval(canvas_x - 3, canvas_y - 3, canvas_x + 3, canvas_y + 3, fill="blue", outline="blue")
+
+    def zoom_cctv(self, event):
+        if event.delta > 0:
+            self.cctv_scale *= 1.1
+        else:
+            self.cctv_scale /= 1.1
+        self.display_image(self.cctv_image, self.cctv_canvas, 'cctv', self.cctv_scale, event.x, event.y)
+
+    def zoom_drone(self, event):
+        if event.delta > 0:
+            self.drone_scale *= 1.1
+        else:
+            self.drone_scale /= 1.1
+        self.display_image(self.drone_image, self.drone_canvas, 'drone', self.drone_scale, event.x, event.y)
+
+    def pan_cctv(self, event):
+        self.cctv_center_x -= event.x - self.cctv_canvas.winfo_width() / 2
+        self.cctv_center_y -= event.y - self.cctv_canvas.winfo_height() / 2
+        self.display_image(self.cctv_image, self.cctv_canvas, 'cctv', self.cctv_scale, self.cctv_center_x, self.cctv_center_y)
+
+    def pan_drone(self, event):
+        self.drone_center_x -= event.x - self.drone_canvas.winfo_width() / 2
+        self.drone_center_y -= event.y - self.drone_canvas.winfo_height() / 2
+        self.display_image(self.drone_image, self.drone_canvas, 'drone', self.drone_scale, self.drone_center_x, self.drone_center_y)
 
     def process_images(self):
         if len(self.cctv_points) != len(self.drone_points) or len(self.cctv_points) < 4:
