@@ -1,160 +1,153 @@
+import tkinter as tk
+from tkinter import filedialog
 import cv2
 import numpy as np
+from PIL import Image, ImageTk
 
-# --- Global variables for GUI interactions ---
-cctv_points_selection = []
-drone_points_selection = []
-scaling_points_selection = []
+class CoordinateTransformerApp:
+    def __init__(self, root):
+        self.root = root
+        self.root.title("Coordinate Transformer")
 
-def select_points_callback(event, x, y, flags, param):
-    """Callback for point selection GUI."""
-    global cctv_points_selection, drone_points_selection
-    combined_image, cctv_image, _ = param
+        # --- Frames ---
+        top_frame = tk.Frame(root)
+        top_frame.pack(pady=5)
 
-    if event == cv2.EVENT_LBUTTONDOWN:
-        if x < cctv_image.shape[1]:
-            cctv_points_selection.append((x, y))
-            cv2.circle(combined_image, (x, y), 5, (0, 255, 0), -1)
+        main_frame = tk.Frame(root)
+        main_frame.pack(padx=10, pady=10)
+
+        # --- Widgets ---
+        self.upload_cctv_btn = tk.Button(top_frame, text="Upload CCTV Image", command=self.upload_cctv)
+        self.upload_cctv_btn.pack(side=tk.LEFT, padx=5)
+
+        self.upload_drone_btn = tk.Button(top_frame, text="Upload Drone Image", command=self.upload_drone)
+        self.upload_drone_btn.pack(side=tk.LEFT, padx=5)
+
+        self.ok_btn = tk.Button(top_frame, text="OK", command=self.process_images)
+        self.ok_btn.pack(side=tk.LEFT, padx=5)
+
+        self.cctv_canvas = tk.Canvas(main_frame, bg="lightgray", width=640, height=480)
+        self.cctv_canvas.pack(side=tk.LEFT, padx=5)
+
+        self.drone_canvas = tk.Canvas(main_frame, bg="lightgray", width=640, height=480)
+        self.drone_canvas.pack(side=tk.LEFT, padx=5)
+
+        self.cctv_canvas.bind("<Button-1>", self.select_cctv_point)
+        self.drone_canvas.bind("<Button-1>", self.select_drone_point)
+
+        # --- Image data ---
+        self.cctv_image = None
+        self.drone_image = None
+        self.cctv_photo = None
+        self.drone_photo = None
+        self.cctv_points = []
+        self.drone_points = []
+        self.cctv_image_resized_ratio = 1
+        self.drone_image_resized_ratio = 1
+
+
+    def upload_cctv(self):
+        filepath = filedialog.askopenfilename()
+        if not filepath:
+            return
+        self.cctv_image = cv2.imread(filepath)
+        self.display_image(self.cctv_image, self.cctv_canvas, 'cctv')
+
+    def upload_drone(self):
+        filepath = filedialog.askopenfilename()
+        if not filepath:
+            return
+        self.drone_image = cv2.imread(filepath)
+        self.display_image(self.drone_image, self.drone_canvas, 'drone')
+
+    def display_image(self, image, canvas, image_type):
+        canvas.delete("all")
+
+        # Resize image to fit canvas
+        h, w, _ = image.shape
+        h_ratio = 480 / h
+        w_ratio = 640 / w
+        ratio = min(h_ratio, w_ratio)
+
+        if image_type == 'cctv':
+            self.cctv_image_resized_ratio = ratio
         else:
-            drone_x = x - cctv_image.shape[1]
-            drone_points_selection.append((drone_x, y))
-            cv2.circle(combined_image, (x, y), 5, (0, 0, 255), -1)
+            self.drone_image_resized_ratio = ratio
 
-def point_selection_gui(cctv_image, drone_image):
-    """GUI for selecting corresponding points."""
-    global cctv_points_selection, drone_points_selection
-    cctv_points_selection, drone_points_selection = [], []
+        new_h, new_w = int(h * ratio), int(w * ratio)
+        resized_image = cv2.resize(image, (new_w, new_h))
 
-    height = max(cctv_image.shape[0], drone_image.shape[0])
-    cctv_image_resized = cv2.resize(cctv_image, (int(cctv_image.shape[1] * height / cctv_image.shape[0]), height))
-    drone_image_resized = cv2.resize(drone_image, (int(drone_image.shape[1] * height / drone_image.shape[0]), height))
-    combined_image = np.hstack((cctv_image_resized, drone_image_resized))
+        # Convert for Tkinter
+        image_rgb = cv2.cvtColor(resized_image, cv2.COLOR_BGR2RGB)
+        image_pil = Image.fromarray(image_rgb)
 
-    cv2.namedWindow("Point Selection")
-    cv2.setMouseCallback("Point Selection", select_points_callback, (combined_image, cctv_image_resized, drone_image_resized))
+        if image_type == 'cctv':
+            self.cctv_photo = ImageTk.PhotoImage(image_pil)
+            canvas.create_image(0, 0, anchor=tk.NW, image=self.cctv_photo)
+        else:
+            self.drone_photo = ImageTk.PhotoImage(image_pil)
+            canvas.create_image(0, 0, anchor=tk.NW, image=self.drone_photo)
 
-    print("Select corresponding points on the images. Press 'o' when done, 'q' to quit.")
-    while True:
-        cv2.imshow("Point Selection", combined_image)
-        key = cv2.waitKey(1) & 0xFF
-        if key == ord('o'):
-            if len(cctv_points_selection) == len(drone_points_selection) and len(cctv_points_selection) >= 4:
-                break
-            else:
-                print("Please select at least 4 pairs of corresponding points.")
-        elif key == ord('q'):
-            cv2.destroyAllWindows()
-            return None, None
+    def select_cctv_point(self, event):
+        # Store original coordinates
+        original_x = event.x / self.cctv_image_resized_ratio
+        original_y = event.y / self.cctv_image_resized_ratio
+        self.cctv_points.append((original_x, original_y))
 
-    cv2.destroyAllWindows()
-    return np.array(cctv_points_selection), np.array(drone_points_selection)
+        # Draw point on canvas
+        self.cctv_canvas.create_oval(event.x - 3, event.y - 3, event.x + 3, event.y + 3, fill="red", outline="red")
 
-def select_scaling_points_callback(event, x, y, flags, param):
-    """Callback for scaling points GUI."""
-    global scaling_points_selection
-    transformed_image = param[0]
-    if event == cv2.EVENT_LBUTTONDOWN and len(scaling_points_selection) < 2:
-        scaling_points_selection.append((x, y))
-        cv2.circle(transformed_image, (x, y), 5, (0, 255, 255), -1)
-        if len(scaling_points_selection) == 2:
-            cv2.line(transformed_image, scaling_points_selection[0], scaling_points_selection[1], (255, 0, 0), 2)
+    def select_drone_point(self, event):
+        # Store original coordinates
+        original_x = event.x / self.drone_image_resized_ratio
+        original_y = event.y / self.drone_image_resized_ratio
+        self.drone_points.append((original_x, original_y))
 
-def scaling_gui(transformed_image):
-    """GUI for selecting scaling points and getting distance."""
-    global scaling_points_selection
-    scaling_points_selection = []
+        # Draw point on canvas
+        self.drone_canvas.create_oval(event.x - 3, event.y - 3, event.x + 3, event.y + 3, fill="blue", outline="blue")
 
-    cv2.namedWindow("Select Scaling Points")
-    cv2.setMouseCallback("Select Scaling Points", select_scaling_points_callback, (transformed_image,))
+    def process_images(self):
+        if len(self.cctv_points) != len(self.drone_points) or len(self.cctv_points) < 4:
+            print("Error: Please select at least 4 corresponding points for both images.")
+            return
 
-    print("\nSelect two points on the transformed image for scaling. Press 's' to save.")
-    while True:
-        cv2.imshow("Select Scaling Points", transformed_image)
-        key = cv2.waitKey(1) & 0xFF
-        if key == ord('s'):
-            if len(scaling_points_selection) == 2:
-                break
-            else:
-                print("Please select exactly two points.")
-        elif key == ord('q'):
-            cv2.destroyAllWindows()
-            return None
+        cctv_pts = np.array(self.cctv_points)
+        drone_pts = np.array(self.drone_points)
 
-    cv2.destroyAllWindows()
-    try:
-        distance_str = input("Enter real-world distance in meters: ")
-        return float(distance_str)
-    except ValueError:
-        print("Invalid distance.")
-        return None
+        homography_matrix, _ = cv2.findHomography(cctv_pts, drone_pts, cv2.RANSAC, 5.0)
 
-def calculate_speed(points_data, homography_matrix, scale):
-    """Calculates speed from a series of points and timestamps."""
-    if len(points_data) < 2:
-        return 0
+        h, w, _ = self.drone_image.shape
+        self.transformed_image = cv2.warpPerspective(self.cctv_image, homography_matrix, (w, h))
 
-    cctv_pts = np.array([[p[0], p[1]] for p in points_data])
-    transformed_pts = cv2.perspectiveTransform(cctv_pts.reshape(-1, 1, 2).astype(np.float32), homography_matrix).reshape(-1, 2)
-
-    total_distance = 0
-    total_time = 0
-    for i in range(len(transformed_pts) - 1):
-        dist = np.linalg.norm(transformed_pts[i] - transformed_pts[i+1]) * scale
-        time_diff = points_data[i+1][2] - points_data[i][2]
-        if time_diff > 0:
-            total_distance += dist
-            total_time += time_diff
-
-    return total_distance / total_time if total_time > 0 else 0
-
-def main():
-    """Main function to run the coordinate transformation tool."""
-    cctv_image_path = input("Enter the path to the CCTV image: ")
-    drone_image_path = input("Enter the path to the drone image: ")
-
-    cctv_image = cv2.imread(cctv_image_path)
-    drone_image = cv2.imread(drone_image_path)
-
-    if cctv_image is None or drone_image is None:
-        print("Error: Could not load one or both images. Please check the paths.")
-        return
-
-    # 1. Point Selection
-    cctv_pts, drone_pts = point_selection_gui(cctv_image, drone_image)
-    if cctv_pts is None:
-        return
-
-    # 2. Homography and Transformation
-    homography_matrix, _ = cv2.findHomography(cctv_pts, drone_pts, cv2.RANSAC, 5.0)
-    height, width, _ = drone_image.shape
-    transformed_image = cv2.warpPerspective(cctv_image, homography_matrix, (width, height))
-
-    # 3. Scaling
-    real_distance = scaling_gui(transformed_image.copy())
-    if real_distance is None:
-        return
-
-    pixel_distance = np.linalg.norm(np.array(scaling_points_selection[0]) - np.array(scaling_points_selection[1]))
-    scale = real_distance / pixel_distance
-    print(f"Calculated scale: {scale} meters/pixel")
-
-    # 4. Speed Calculation
-    points_for_speed = []
-    print("\nEnter coordinates and timestamps for speed calculation (format: x,y,timestamp).")
-    print("Enter 'done' when you are finished.")
-    while True:
-        try:
-            line = input("> ")
-            if line.lower() == 'done':
-                break
-            x, y, t = map(float, line.split(','))
-            points_for_speed.append((x, y, t))
-        except ValueError:
-            print("Invalid input.")
-
-    if points_for_speed:
-        speed = calculate_speed(points_for_speed, homography_matrix, scale)
-        print(f"\nCalculated average speed: {speed:.2f} m/s")
+        self.root.destroy()
 
 if __name__ == '__main__':
-    main()
+    root = tk.Tk()
+    app = CoordinateTransformerApp(root)
+    root.mainloop()
+
+    # After the main loop is destroyed, check if there is a transformed image
+    if hasattr(app, 'transformed_image'):
+        transformed_window = tk.Tk()
+        transformed_window.title("Transformed Image")
+
+        # Convert for Tkinter
+        image_rgb = cv2.cvtColor(app.transformed_image, cv2.COLOR_BGR2RGB)
+        image_pil = Image.fromarray(image_rgb)
+        photo = ImageTk.PhotoImage(image_pil)
+
+        canvas = tk.Canvas(transformed_window, width=photo.width(), height=photo.height())
+        canvas.pack()
+        canvas.create_image(0, 0, anchor=tk.NW, image=photo)
+
+        def save_image():
+            filepath = filedialog.asksaveasfilename(defaultextension=".jpg", filetypes=[("JPEG files", "*.jpg"), ("PNG files", "*.png")])
+            if not filepath:
+                return
+            cv2.imwrite(filepath, app.transformed_image)
+            print(f"Image saved to {filepath}")
+
+        save_btn = tk.Button(transformed_window, text="Save Image", command=save_image)
+        save_btn.pack(pady=5)
+
+        transformed_window.mainloop()
