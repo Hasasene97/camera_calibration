@@ -1,94 +1,160 @@
 import cv2
 import numpy as np
 
-def calculate_homography(cctv_points, drone_points):
-    """
-    Calculates the homography matrix from CCTV to drone coordinates.
+# --- Global variables for GUI interactions ---
+cctv_points_selection = []
+drone_points_selection = []
+scaling_points_selection = []
 
-    Args:
-        cctv_points (np.ndarray): A numpy array of shape (n, 2) representing
-                                 the coordinates of points in the CCTV footage.
-        drone_points (np.ndarray): A numpy array of shape (n, 2) representing
-                                  the corresponding coordinates of points in the
-                                  drone footage.
+def select_points_callback(event, x, y, flags, param):
+    """Callback for point selection GUI."""
+    global cctv_points_selection, drone_points_selection
+    combined_image, cctv_image, _ = param
 
-    Returns:
-        np.ndarray: The 3x3 homography matrix.
-    """
-    homography_matrix, _ = cv2.findHomography(cctv_points, drone_points)
-    return homography_matrix
+    if event == cv2.EVENT_LBUTTONDOWN:
+        if x < cctv_image.shape[1]:
+            cctv_points_selection.append((x, y))
+            cv2.circle(combined_image, (x, y), 5, (0, 255, 0), -1)
+        else:
+            drone_x = x - cctv_image.shape[1]
+            drone_points_selection.append((drone_x, y))
+            cv2.circle(combined_image, (x, y), 5, (0, 0, 255), -1)
 
-def transform_points(points, homography_matrix):
-    """
-    Transforms points using a homography matrix.
+def point_selection_gui(cctv_image, drone_image):
+    """GUI for selecting corresponding points."""
+    global cctv_points_selection, drone_points_selection
+    cctv_points_selection, drone_points_selection = [], []
 
-    Args:
-        points (np.ndarray): A numpy array of shape (n, 2) representing the
-                             points to be transformed.
-        homography_matrix (np.ndarray): The 3x3 homography matrix.
+    height = max(cctv_image.shape[0], drone_image.shape[0])
+    cctv_image_resized = cv2.resize(cctv_image, (int(cctv_image.shape[1] * height / cctv_image.shape[0]), height))
+    drone_image_resized = cv2.resize(drone_image, (int(drone_image.shape[1] * height / drone_image.shape[0]), height))
+    combined_image = np.hstack((cctv_image_resized, drone_image_resized))
 
-    Returns:
-        np.ndarray: The transformed points.
-    """
-    transformed_points = cv2.perspectiveTransform(points.reshape(-1, 1, 2).astype(np.float32), homography_matrix)
-    return transformed_points.reshape(-1, 2)
+    cv2.namedWindow("Point Selection")
+    cv2.setMouseCallback("Point Selection", select_points_callback, (combined_image, cctv_image_resized, drone_image_resized))
 
-def calculate_scale(drone_points, real_world_distance_meters):
-    """
-    Calculates the pixel-to-meter scale from the drone footage.
+    print("Select corresponding points on the images. Press 'o' when done, 'q' to quit.")
+    while True:
+        cv2.imshow("Point Selection", combined_image)
+        key = cv2.waitKey(1) & 0xFF
+        if key == ord('o'):
+            if len(cctv_points_selection) == len(drone_points_selection) and len(cctv_points_selection) >= 4:
+                break
+            else:
+                print("Please select at least 4 pairs of corresponding points.")
+        elif key == ord('q'):
+            cv2.destroyAllWindows()
+            return None, None
 
-    Args:
-        drone_points (np.ndarray): A numpy array of shape (2, 2) representing
-                                  two points in the drone footage with a known
-                                  real-world distance.
-        real_world_distance_meters (float): The real-world distance between the
-                                           two points in meters.
+    cv2.destroyAllWindows()
+    return np.array(cctv_points_selection), np.array(drone_points_selection)
 
-    Returns:
-        float: The pixel-to-meter ratio.
-    """
-    pixel_distance = np.linalg.norm(drone_points[0] - drone_points[1])
-    return real_world_distance_meters / pixel_distance
+def select_scaling_points_callback(event, x, y, flags, param):
+    """Callback for scaling points GUI."""
+    global scaling_points_selection
+    transformed_image = param[0]
+    if event == cv2.EVENT_LBUTTONDOWN and len(scaling_points_selection) < 2:
+        scaling_points_selection.append((x, y))
+        cv2.circle(transformed_image, (x, y), 5, (0, 255, 255), -1)
+        if len(scaling_points_selection) == 2:
+            cv2.line(transformed_image, scaling_points_selection[0], scaling_points_selection[1], (255, 0, 0), 2)
 
-def to_meters(points, scale):
-    """
-    Converts pixel coordinates to meters.
+def scaling_gui(transformed_image):
+    """GUI for selecting scaling points and getting distance."""
+    global scaling_points_selection
+    scaling_points_selection = []
 
-    Args:
-        points (np.ndarray): The points in pixel coordinates.
-        scale (float): The pixel-to-meter ratio.
+    cv2.namedWindow("Select Scaling Points")
+    cv2.setMouseCallback("Select Scaling Points", select_scaling_points_callback, (transformed_image,))
 
-    Returns:
-        np.ndarray: The points in meter coordinates.
-    """
-    return points * scale
+    print("\nSelect two points on the transformed image for scaling. Press 's' to save.")
+    while True:
+        cv2.imshow("Select Scaling Points", transformed_image)
+        key = cv2.waitKey(1) & 0xFF
+        if key == ord('s'):
+            if len(scaling_points_selection) == 2:
+                break
+            else:
+                print("Please select exactly two points.")
+        elif key == ord('q'):
+            cv2.destroyAllWindows()
+            return None
+
+    cv2.destroyAllWindows()
+    try:
+        distance_str = input("Enter real-world distance in meters: ")
+        return float(distance_str)
+    except ValueError:
+        print("Invalid distance.")
+        return None
+
+def calculate_speed(points_data, homography_matrix, scale):
+    """Calculates speed from a series of points and timestamps."""
+    if len(points_data) < 2:
+        return 0
+
+    cctv_pts = np.array([[p[0], p[1]] for p in points_data])
+    transformed_pts = cv2.perspectiveTransform(cctv_pts.reshape(-1, 1, 2).astype(np.float32), homography_matrix).reshape(-1, 2)
+
+    total_distance = 0
+    total_time = 0
+    for i in range(len(transformed_pts) - 1):
+        dist = np.linalg.norm(transformed_pts[i] - transformed_pts[i+1]) * scale
+        time_diff = points_data[i+1][2] - points_data[i][2]
+        if time_diff > 0:
+            total_distance += dist
+            total_time += time_diff
+
+    return total_distance / total_time if total_time > 0 else 0
+
+def main():
+    """Main function to run the coordinate transformation tool."""
+    cctv_image_path = input("Enter the path to the CCTV image: ")
+    drone_image_path = input("Enter the path to the drone image: ")
+
+    cctv_image = cv2.imread(cctv_image_path)
+    drone_image = cv2.imread(drone_image_path)
+
+    if cctv_image is None or drone_image is None:
+        print("Error: Could not load one or both images. Please check the paths.")
+        return
+
+    # 1. Point Selection
+    cctv_pts, drone_pts = point_selection_gui(cctv_image, drone_image)
+    if cctv_pts is None:
+        return
+
+    # 2. Homography and Transformation
+    homography_matrix, _ = cv2.findHomography(cctv_pts, drone_pts, cv2.RANSAC, 5.0)
+    height, width, _ = drone_image.shape
+    transformed_image = cv2.warpPerspective(cctv_image, homography_matrix, (width, height))
+
+    # 3. Scaling
+    real_distance = scaling_gui(transformed_image.copy())
+    if real_distance is None:
+        return
+
+    pixel_distance = np.linalg.norm(np.array(scaling_points_selection[0]) - np.array(scaling_points_selection[1]))
+    scale = real_distance / pixel_distance
+    print(f"Calculated scale: {scale} meters/pixel")
+
+    # 4. Speed Calculation
+    points_for_speed = []
+    print("\nEnter coordinates and timestamps for speed calculation (format: x,y,timestamp).")
+    print("Enter 'done' when you are finished.")
+    while True:
+        try:
+            line = input("> ")
+            if line.lower() == 'done':
+                break
+            x, y, t = map(float, line.split(','))
+            points_for_speed.append((x, y, t))
+        except ValueError:
+            print("Invalid input.")
+
+    if points_for_speed:
+        speed = calculate_speed(points_for_speed, homography_matrix, scale)
+        print(f"\nCalculated average speed: {speed:.2f} m/s")
 
 if __name__ == '__main__':
-    # --- Example Usage ---
-
-    # 1. Define corresponding points between CCTV and drone footage.
-    #    (These would be manually selected or found using feature matching)
-    cctv_points = np.array([[100, 150], [500, 150], [100, 400], [500, 400]])
-    drone_points = np.array([[50, 50], [450, 50], [50, 350], [450, 350]])
-
-    # 2. Calculate the homography matrix.
-    homography_matrix = calculate_homography(cctv_points, drone_points)
-    print("Homography Matrix:\n", homography_matrix)
-
-    # 3. Transform a point from CCTV to drone coordinates.
-    cctv_point_to_transform = np.array([[250, 275]])
-    drone_point = transform_points(cctv_point_to_transform, homography_matrix)
-    print(f"\nTransformed point from CCTV to drone: {drone_point[0]}")
-
-    # 4. Define two points in the drone footage with a known real-world distance.
-    #    (e.g., the width of a crosswalk)
-    drone_ref_points = np.array([[50, 50], [450, 50]])
-    crosswalk_width_meters = 5.0  # meters
-
-    # 5. Calculate the pixel-to-meter scale.
-    scale = calculate_scale(drone_ref_points, crosswalk_width_meters)
-    print(f"\nPixel-to-meter scale: {scale}")
-
-    # 6. Convert the transformed drone point to meters.
-    point_in_meters = to_meters(drone_point, scale)
-    print(f"\nPoint in meters: {point_in_meters[0]}")
+    main()
